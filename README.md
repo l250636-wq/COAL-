@@ -53,5 +53,5 @@ COAL/
 
 ## Output screenshot
 
-![Q2 output](<img width="325" height="221" alt="image" src="https://github.com/user-attachments/assets/e2e5f75a-0561-4847-8dfa-48b5201d830f" />
-)
+<img width="327" height="218" alt="image" src="https://github.com/user-attachments/assets/2d773edb-5a47-49d6-bb4c-684e85d69fa0" />
+
