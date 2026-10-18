@@ -1,0 +1,693 @@
+[org 0x0100]
+jmp start
+
+title:       db ' 8088 TEXT VIEWPORT MANAGER ', 0
+keyword:     db 'stack', 0
+msg_total:   db 'Total Matches Found: ', 0
+msg_status:  db ' | Viewport Status: ACTIVE', 0
+next_line:   dw 0                       
+match_count: dw 0                       
+
+paragraph:
+    db 'A subroutine is called with the CALL instruction, which', 0
+    db 'saves the return address on the stack. Parameters are', 0
+    db 'pushed on the stack by the caller before the call, and', 0
+    db 'the callee uses BP to reach them at fixed offsets.', 0
+    db 'The first thing a subroutine does is save BP, then copy', 0
+    db 'SP into BP. After that, BP stays fixed while SP moves.', 0
+    db 'Local variables live below BP, so SUB SP, N makes room', 0
+    db 'for them on the stack. They vanish when SP is restored.', 0
+    db 'Registers that the subroutine changes are pushed first', 0
+    db 'and popped in reverse order, so the caller never sees a', 0
+    db 'change. The RET N instruction pops the return address', 0
+    db 'and then removes N bytes of parameters from the stack,', 0
+    db 'so the callee cleans up its own stack frame.', 0
+    db 'Text mode video memory starts at segment 0xB800. Each', 0
+    db 'character takes two bytes: the ASCII code, then the', 0
+    db 'attribute. String instructions such as LODSB, STOSW and', 0
+    db 'MOVSW work with DS:SI and ES:DI, and a REP prefix repeats', 0
+    db 'them CX times, making screen updates fast and compact.', 0
+    db 0
+
+
+clear_screen:
+    push bp
+    mov bp, sp
+    push ax
+    push cx
+    push di
+    push es
+
+    mov ax, 0xb800
+    mov es, ax
+    xor di, di
+    mov ax, 0x0720              ; blank, light grey on black
+    mov cx, 2000                ; 80 * 25 cells
+    cld
+    rep stosw
+
+    pop es
+    pop di
+    pop cx
+    pop ax
+    pop bp
+    ret
+
+
+calc_offset:
+    push bp
+    mov bp, sp
+    push bx
+    push dx
+
+    mov ax, [bp+6]              ; row
+    mov bx, 80
+    mul bx                      ; DX:AX = row * 80
+    add ax, [bp+4]              ; + col
+    shl ax, 1                   ; * 2 (character byte + attribute byte)
+
+    pop dx
+    pop bx
+    pop bp
+    ret 4
+
+strlen:
+    push bp
+    mov bp, sp
+    sub sp, 2                   ; local: [bp-2] = length counter
+    push si
+
+    mov si, [bp+4]
+    mov word [bp-2], 0
+    cld
+sl_next:
+    lodsb
+    cmp al, 0
+    je sl_done
+    inc word [bp-2]
+    jmp sl_next
+sl_done:
+    mov ax, [bp-2]
+
+    pop si
+    mov sp, bp
+    pop bp
+    ret 2
+
+
+print_string:
+    push bp
+    mov bp, sp
+    sub sp, 2                   ; local: [bp-2] = running column
+    push si
+    push di
+    push es
+
+    mov ax, [bp+8]
+    mov [bp-2], ax              ; column starts at col
+
+    push word [bp+10]
+    push word [bp+8]
+    call calc_offset
+    mov di, ax                  ; DI = video offset of first character
+
+    mov ax, 0xb800
+    mov es, ax
+    mov si, [bp+6]
+    mov ah, [bp+4]              ; AH = attribute for every character
+    cld
+ps_next:
+    lodsb                       ; AL = next character
+    cmp al, 0
+    je ps_done
+    stosw                       ; write character + attribute
+    inc word [bp-2]
+    jmp ps_next
+ps_done:
+    mov ax, [bp-2]              ; return the next free column
+
+    pop es
+    pop di
+    pop si
+    mov sp, bp
+    pop bp
+    ret 8
+
+
+draw_window:
+    push bp
+    mov bp, sp
+    sub sp, 2                   ; local: [bp-2] = current row
+    push ax
+    push cx
+    push di
+    push es
+
+    mov ax, 0xb800
+    mov es, ax
+    cld
+
+   
+    push word [bp+12]
+    push word [bp+10]
+    call calc_offset
+    mov di, ax
+    mov ah, [bp+4]
+    mov al, 0xC9
+    stosw
+    mov cx, [bp+6]
+    sub cx, [bp+10]
+    dec cx                      ; cx = right - left - 1
+    mov al, 0xCD
+    rep stosw
+    mov al, 0xBB
+    stosw
+
+    mov ax, [bp+12]
+    inc ax
+    mov [bp-2], ax
+dw_side:
+    mov ax, [bp-2]
+    cmp ax, [bp+8]
+    jae dw_bottom               ; stop when row reaches bottom
+
+    push word [bp-2]
+    push word [bp+10]
+    call calc_offset            ; left side
+    mov di, ax
+    mov ah, [bp+4]
+    mov al, 0xBA
+    mov [es:di], ax
+
+    push word [bp-2]
+    push word [bp+6]
+    call calc_offset            ; right side
+    mov di, ax
+    mov ah, [bp+4]
+    mov al, 0xBA
+    mov [es:di], ax
+
+    inc word [bp-2]
+    jmp dw_side
+
+    ; ---- bottom border ----
+dw_bottom:
+    push word [bp+8]
+    push word [bp+10]
+    call calc_offset
+    mov di, ax
+    mov ah, [bp+4]
+    mov al, 0xC8
+    stosw
+    mov cx, [bp+6]
+    sub cx, [bp+10]
+    dec cx
+    mov al, 0xCD
+    rep stosw
+    mov al, 0xBC
+    stosw
+
+    pop es
+    pop di
+    pop cx
+    pop ax
+    mov sp, bp
+    pop bp
+    ret 10
+
+
+draw_banner:
+    push bp
+    mov bp, sp
+    sub sp, 2                   ; local: [bp-2] = inner width
+    push ax
+    push bx
+    push cx
+    push di
+    push es
+
+    mov ax, [bp+8]
+    sub ax, [bp+10]
+    dec ax
+    mov [bp-2], ax              ; width = right - left - 1
+
+    
+    mov ax, [bp+10]
+    inc ax                      ; first column inside the border
+    push word [bp+12]
+    push ax
+    call calc_offset
+    mov di, ax
+    mov ax, 0xb800
+    mov es, ax
+    mov ah, [bp+4]
+    mov al, 0x20
+    mov cx, [bp-2]
+    cld
+    rep stosw
+
+    push word [bp+6]
+    call strlen                 ; AX = title length
+    mov bx, [bp-2]
+    sub bx, ax
+    shr bx, 1
+    add bx, [bp+10]
+    inc bx                      ; BX = starting column
+
+    push word [bp+12]
+    push bx
+    push word [bp+6]
+    push word [bp+4]
+    call print_string
+
+    pop es
+    pop di
+    pop cx
+    pop bx
+    pop ax
+    mov sp, bp
+    pop bp
+    ret 10
+
+
+stream_text:
+    push bp
+    mov bp, sp
+    sub sp, 2                   ; local: [bp-2] = current row
+    push cx
+    push si
+    push di
+    push es
+
+    mov ax, 0xb800
+    mov es, ax
+    mov si, [bp+14]
+    mov ax, [bp+12]
+    mov [bp-2], ax              ; row = top
+    cld
+st_row:
+    mov ax, [bp-2]
+    cmp ax, [bp+8]
+    ja st_done                  ; past the bottom row
+    cmp byte [si], 0
+    je st_done                  ; end of the paragraph
+
+    push word [bp-2]
+    push word [bp+10]
+    call calc_offset
+    mov di, ax                  ; DI = start of this row inside the margins
+
+    mov cx, [bp+6]
+    sub cx, [bp+10]
+    inc cx                      ; cx = right - left + 1 characters allowed
+    mov ah, [bp+4]
+st_char:
+    lodsb                       ; AL = next character of the line
+    cmp al, 0
+    je st_eol
+    stosw                       ; character + attribute into video memory
+    loop st_char
+st_skip:                        ; margin reached: throw away rest of the line
+    lodsb
+    cmp al, 0
+    jne st_skip
+st_eol:
+    inc word [bp-2]
+    jmp st_row
+st_done:
+    mov ax, si                  ; return the position we stopped at
+
+    pop es
+    pop di
+    pop si
+    pop cx
+    mov sp, bp
+    pop bp
+    ret 12
+
+
+scroll_window_up:
+    push bp
+    mov bp, sp
+    sub sp, 6                   ; [bp-2]=row  [bp-4]=width  [bp-6]=lines to move
+    push ax
+    push bx
+    push cx
+    push si
+    push di
+    push ds
+    push es
+
+    mov ax, 0xb800
+    mov ds, ax                  ; source  = video memory
+    mov es, ax                  ; target  = video memory
+    cld
+
+    mov ax, [bp+6]
+    sub ax, [bp+10]
+    inc ax
+    mov [bp-4], ax              ; width in cells = right - left + 1
+
+    mov ax, [bp+8]
+    sub ax, [bp+12]
+    inc ax                      ; AX = height of the window
+    mov bx, [bp+4]              ; BX = n
+    cmp bx, ax
+    jbe sw_n_ok
+    mov bx, ax                  ; n can not be bigger than the height
+sw_n_ok:
+    mov [bp-6], bx
+
+    mov ax, [bp+12]
+    mov [bp-2], ax
+sw_copy:
+    mov ax, [bp+8]
+    sub ax, [bp-6]              ; last destination row = bottom - n
+    cmp [bp-2], ax
+    jg sw_blank_start
+
+    mov ax, [bp-2]
+    add ax, [bp-6]              ; source row = r + n
+    push ax
+    push word [bp+10]
+    call calc_offset
+    mov si, ax                  ; SI = start of source row (at column left)
+
+    push word [bp-2]
+    push word [bp+10]
+    call calc_offset
+    mov di, ax                  ; DI = start of destination row
+
+    mov cx, [bp-4]
+    rep movsw                   ; move one row of the window only
+    inc word [bp-2]
+    jmp sw_copy
+
+    ; ---- blank phase: rows bottom-n+1 .. bottom ----
+sw_blank_start:
+    mov ax, [bp+8]
+    sub ax, [bp-6]
+    inc ax
+    mov [bp-2], ax
+sw_blank:
+    mov ax, [bp-2]
+    cmp ax, [bp+8]
+    jg sw_done
+
+    push ax
+    push word [bp+10]
+    call calc_offset
+    mov di, ax
+    mov cx, [bp-4]
+    mov ax, 0x0720
+    rep stosw                   ; blank one row of the window
+    inc word [bp-2]
+    jmp sw_blank
+sw_done:
+    pop es
+    pop ds
+    pop di
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    mov sp, bp
+    pop bp
+    ret 10
+
+find_and_highlight:
+    push bp
+    mov bp, sp
+    sub sp, 74                  ; [bp-2]=count [bp-4]=row [bp-6]=index
+                                ; [bp-8]=substring length
+                                ; [bp-74 .. bp-11] = 64-byte row buffer
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push ds
+    push es
+
+    mov word [bp-2], 0          ; matches = 0
+    push word [bp+6]
+    call strlen
+    mov [bp-8], ax              ; substring length
+    cmp ax, 0
+    je fh_done
+
+    mov word [bp-4], 5          ; first text row
+fh_row:
+    cmp word [bp-4], 20
+    jg fh_done                  ; last text row passed
+
+    push word [bp-4]
+    mov ax, 10
+    push ax
+    call calc_offset
+    mov si, ax                  ; SI = row start in video memory
+    mov di, bp
+    sub di, 74                  ; DI = buffer on the stack
+    push ss
+    pop es                      ; ES:DI = buffer
+    mov ax, 0xb800
+    mov ds, ax                  ; DS:SI = video memory
+    mov cx, 61
+    cld
+fh_copy:
+    lodsw                       ; AL = character, AH = attribute
+    stosb                       ; keep only the character
+    loop fh_copy
+    push cs
+    pop ds                      ; DS back to the data segment (substring)
+
+    mov word [bp-6], 0
+fh_scan:
+    mov ax, 61
+    sub ax, [bp-8]              ; last possible start index
+    cmp [bp-6], ax
+    jg fh_next_row
+
+    mov si, [bp+6]              ; DS:SI = substring
+    mov di, bp
+    sub di, 74
+    add di, [bp-6]              ; ES:DI = buffer + index
+    mov cx, [bp-8]
+    cld
+    repe cmpsb
+    jne fh_no_match
+
+    inc word [bp-2]
+    push word [bp-4]
+    mov ax, [bp-6]
+    add ax, 10                  ; screen column of the first matching char
+    push ax
+    call calc_offset
+    mov di, ax
+    inc di                      ; point at the attribute byte
+    mov ax, 0xb800
+    mov es, ax
+    mov al, [bp+4]
+    mov cx, [bp-8]
+fh_attr:
+    stosb                       ; write attribute, DI moves to next char byte
+    inc di                      ; skip the character byte (left unchanged)
+    loop fh_attr
+    push ss
+    pop es                      ; ES back to the buffer segment
+
+    mov ax, [bp-6]
+    add ax, [bp-8]
+    mov [bp-6], ax              ; continue after the matched text
+    jmp fh_scan
+
+fh_no_match:
+    inc word [bp-6]
+    jmp fh_scan
+
+fh_next_row:
+    inc word [bp-4]
+    jmp fh_row
+
+fh_done:
+    mov ax, [bp-2]              ; return the match count
+
+    pop es
+    pop ds
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    mov sp, bp
+    pop bp
+    ret 4
+
+printNum:
+    push bp
+    mov bp, sp
+    sub sp, 2                   ; local: [bp-2] = number of digits
+    push bx
+    push cx
+    push dx
+    push di
+    push es
+
+    mov ax, [bp+10]
+    mov bx, 10
+    mov word [bp-2], 0
+pn_div:
+    xor dx, dx
+    div bx                      ; AX = quotient, DX = remainder (a digit)
+    push dx                     ; digit goes on the stack
+    inc word [bp-2]
+    cmp ax, 0
+    jne pn_div
+
+    push word [bp+8]
+    push word [bp+6]
+    call calc_offset
+    mov di, ax
+    mov ax, 0xb800
+    mov es, ax
+    mov ah, [bp+4]
+    mov cx, [bp-2]
+    cld
+pn_print:
+    pop dx                      ; most significant digit comes out first
+    add dl, 0x30                ; digit -> ASCII
+    mov al, dl
+    stosw
+    loop pn_print
+
+    mov ax, [bp+6]
+    add ax, [bp-2]              ; next free column
+
+    pop es
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    mov sp, bp
+    pop bp
+    ret 8
+
+; =====================================================================
+; main
+; =====================================================================
+start:
+    push cs
+    pop ds
+    push cs
+    pop es
+
+    call clear_screen
+
+    ; ---- outer window: rows 3..21, columns 8..72 ----
+    mov ax, 3
+    push ax                     ; top
+    mov ax, 8
+    push ax                     ; left
+    mov ax, 21
+    push ax                     ; bottom
+    mov ax, 72
+    push ax                     ; right
+    mov ax, 0x0F
+    push ax                     ; bright white border
+    call draw_window
+
+    ; ---- title banner on row 4, yellow on blue ----
+    mov ax, 4
+    push ax                     ; row
+    mov ax, 8
+    push ax                     ; left border column
+    mov ax, 72
+    push ax                     ; right border column
+    mov ax, title
+    push ax
+    mov ax, 0x1E
+    push ax
+    call draw_banner
+
+    ; ---- stream the paragraph into rows 5..20, columns 10..70 ----
+    mov ax, paragraph
+    push ax
+    mov ax, 5
+    push ax                     ; top
+    mov ax, 10
+    push ax                     ; left  (8 + 2)
+    mov ax, 20
+    push ax                     ; bottom
+    mov ax, 70
+    push ax                     ; right (72 - 2)
+    mov ax, 0x07
+    push ax
+    call stream_text
+    mov [next_line], ax         ; remember where the text stopped
+
+    ; ---- scroll only the text area up by 2 lines ----
+    mov ax, 5
+    push ax                     ; top
+    mov ax, 10
+    push ax                     ; left
+    mov ax, 20
+    push ax                     ; bottom
+    mov ax, 70
+    push ax                     ; right
+    mov ax, 2
+    push ax                     ; n lines
+    call scroll_window_up
+
+    push word [next_line]
+    mov ax, 19
+    push ax                     ; top
+    mov ax, 10
+    push ax
+    mov ax, 20
+    push ax                     ; bottom
+    mov ax, 70
+    push ax
+    mov ax, 0x07
+    push ax
+    call stream_text
+
+    ; ---- highlight every "stack" (blinking yellow on red) ----
+    mov ax, keyword
+    push ax
+    mov ax, 0xCE
+    push ax
+    call find_and_highlight
+    mov [match_count], ax
+
+    ; ---- status bar on row 23 ----
+    mov ax, 23
+    push ax
+    mov ax, 8
+    push ax
+    mov ax, msg_total
+    push ax
+    mov ax, 0x0F
+    push ax
+    call print_string           ; AX = column after the text
+    mov bx, ax
+
+    push word [match_count]
+    mov ax, 23
+    push ax
+    push bx
+    mov ax, 0x0E
+    push ax
+    call printNum               ; AX = column after the number
+    mov bx, ax
+
+    mov ax, 23
+    push ax
+    push bx
+    mov ax, msg_status
+    push ax
+    mov ax, 0x0F
+    push ax
+    call print_string
+
+    mov ax, 0x4c00
+    int 0x21
